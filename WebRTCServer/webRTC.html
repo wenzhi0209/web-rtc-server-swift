@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="zh">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <title>WebRTC 通信</title>
+    <style>
+      * {
+        box-sizing: border-box;
+        -webkit-tap-highlight-color: transparent;
+      }
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        padding: 16px;
+        max-width: 600px;
+        margin: 0 auto;
+        background: #f5f5f7;
+        min-height: 100vh;
+      }
+      h2 {
+        text-align: center;
+        color: #1d1d1f;
+        font-size: clamp(1.2rem, 5vw, 1.5rem);
+        margin-bottom: 16px;
+      }
+      textarea {
+        width: 100%;
+        height: 60px;
+        font-size: 10px;
+        margin: 8px 0;
+        border: 1px solid #d2d2d7;
+        border-radius: 8px;
+        padding: 8px;
+        resize: none;
+        font-family: monospace;
+      }
+      button {
+        padding: 12px 16px;
+        margin: 4px;
+        cursor: pointer;
+        border: none;
+        border-radius: 8px;
+        font-size: 14px;
+        font-weight: 500;
+        transition: all 0.2s;
+        background: #007aff;
+        color: white;
+      }
+      button:active {
+        transform: scale(0.97);
+        opacity: 0.8;
+      }
+      .step {
+        background: white;
+        padding: 16px;
+        margin: 12px 0;
+        border-radius: 12px;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+      }
+      .step h4 {
+        margin: 0 0 12px 0;
+        font-size: 14px;
+        color: #1d1d1f;
+      }
+      .step-num {
+        display: inline-block;
+        width: 24px;
+        height: 24px;
+        background: #007aff;
+        color: white;
+        border-radius: 50%;
+        text-align: center;
+        line-height: 24px;
+        font-size: 12px;
+        margin-right: 8px;
+      }
+      #log {
+        background: white;
+        padding: 12px;
+        height: 180px;
+        overflow-y: auto;
+        margin-top: 12px;
+        border-radius: 12px;
+        font-size: 12px;
+        line-height: 1.6;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+      }
+      .msg-box {
+        display: flex;
+        gap: 8px;
+        margin-top: 12px;
+      }
+      #msg {
+        flex: 1;
+        padding: 12px;
+        border: 1px solid #d2d2d7;
+        border-radius: 8px;
+        font-size: 16px;
+        outline: none;
+      }
+      #msg:focus {
+        border-color: #007aff;
+      }
+      .btn-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+      .btn-row button {
+        flex: 1;
+        min-width: 120px;
+      }
+      .success { color: #34c759; }
+      .warning { color: #ff9500; }
+      .error { color: #ff3b30; }
+      
+      @media (max-width: 400px) {
+        body { padding: 12px; }
+        .step { padding: 12px; }
+        button { padding: 10px 12px; font-size: 13px; }
+        textarea { height: 50px; font-size: 9px; }
+        #log { height: 150px; font-size: 11px; }
+      }
+    </style>
+  </head>
+  <body>
+    <h2>WebRTC 跨设备通信</h2>
+
+    <div class="step">
+      <h4><span class="step-num">1</span>发起方：创建连接</h4>
+      <div class="btn-row">
+        <button onclick="createOffer()">创建 Offer</button>
+      </div>
+      <textarea id="offer" placeholder="Offer 会显示在这里，复制给接收方"></textarea>
+    </div>
+
+    <div class="step">
+      <h4><span class="step-num">2</span>接收方：粘贴 Offer 后点击</h4>
+      <div class="btn-row">
+        <button onclick="acceptOffer()">接受并生成 Answer</button>
+      </div>
+      <textarea id="answer" placeholder="Answer 会显示在这里，复制回发起方"></textarea>
+    </div>
+
+    <div class="step">
+      <h4><span class="step-num">3</span>发起方：粘贴 Answer 完成连接</h4>
+      <div class="btn-row">
+        <button onclick="acceptAnswer()">完成连接</button>
+      </div>
+    </div>
+
+    <div class="msg-box">
+      <input id="msg" placeholder="输入消息..." onkeypress="if(event.key==='Enter')send()" />
+      <button onclick="send()">发送</button>
+    </div>
+
+    <div id="log"></div>
+
+    <script>
+      let pc = null;
+      let dc = null;
+
+      function log(msg) {
+        const d = document.getElementById("log");
+        d.innerHTML += `[${new Date().toLocaleTimeString()}] ${msg}<br>`;
+        d.scrollTop = d.scrollHeight;
+        console.log(msg);
+      }
+
+      // 第一步：Chrome 创建 Offer
+      async function createOffer() {
+        // 请求媒体权限以获取真实IP（不会真的使用摄像头）
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({
+            audio: true,
+          });
+          stream.getTracks().forEach((t) => t.stop()); // 立即停止
+          log("✅ 已获取媒体权限");
+        } catch (e) {
+          log("⚠️ 未获取媒体权限，可能只有mDNS候选");
+        }
+
+        pc = new RTCPeerConnection();
+
+        let candidateCount = 0;
+        pc.onicecandidate = (e) => {
+          if (e.candidate) {
+            candidateCount++;
+            const c = e.candidate.candidate;
+            // 显示完整候选信息：IP:端口 类型
+            const match = c.match(
+              /candidate:\S+ \d+ \S+ \d+ (\S+) (\d+) typ (\S+)/
+            );
+            if (match) {
+              log(
+                `🧊 ICE候选 #${candidateCount}: ${match[1]}:${match[2]} (${match[3]})`
+              );
+            } else {
+              log(`🧊 ICE候选 #${candidateCount}: ${c.substring(0, 60)}...`);
+            }
+          }
+        };
+
+        pc.onicegatheringstatechange = () => {
+          log("ICE收集状态: " + pc.iceGatheringState);
+          if (pc.iceGatheringState === "complete") {
+            document.getElementById("offer").value = JSON.stringify(
+              pc.localDescription
+            );
+            log(`✅ Offer已生成（${candidateCount}个候选），请复制到Safari`);
+          }
+        };
+
+        pc.oniceconnectionstatechange = () =>
+          log("ICE状态: " + pc.iceConnectionState);
+        pc.onconnectionstatechange = () => {
+          log("连接状态: " + pc.connectionState);
+          if (pc.connectionState === "connected") {
+            log("🎉🎉🎉 连接成功！");
+          }
+        };
+
+        dc = pc.createDataChannel("chat");
+        dc.onopen = () => log("🎉 通道已打开！可以发消息了");
+        dc.onmessage = (e) => log("📩 收到: " + e.data);
+
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        log("正在收集ICE候选...");
+      }
+
+      // 第二步：Safari 接受 Offer 并创建 Answer
+      async function acceptOffer() {
+        const offerStr = document.getElementById("offer").value.trim();
+        if (!offerStr) {
+          alert("请先粘贴Offer");
+          return;
+        }
+
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({
+            audio: true,
+          });
+          stream.getTracks().forEach((t) => t.stop());
+          log("✅ 已获取媒体权限");
+        } catch (e) {
+          log("⚠️ 未获取媒体权限，可能只有mDNS候选");
+        }
+
+        pc = new RTCPeerConnection();
+
+        let candidateCount = 0;
+        pc.onicecandidate = (e) => {
+          if (e.candidate) {
+            candidateCount++;
+            const c = e.candidate.candidate;
+            // 显示完整候选信息：IP:端口 类型
+            const match = c.match(
+              /candidate:\S+ \d+ \S+ \d+ (\S+) (\d+) typ (\S+)/
+            );
+            if (match) {
+              log(
+                `🧊 ICE候选 #${candidateCount}: ${match[1]}:${match[2]} (${match[3]})`
+              );
+            } else {
+              log(`🧊 ICE候选 #${candidateCount}: ${c.substring(0, 60)}...`);
+            }
+          }
+        };
+
+        pc.onicegatheringstatechange = () => {
+          log("ICE收集状态: " + pc.iceGatheringState);
+          if (pc.iceGatheringState === "complete") {
+            document.getElementById("answer").value = JSON.stringify(
+              pc.localDescription
+            );
+            log(`✅ Answer已生成（${candidateCount}个候选），请复制回Chrome`);
+          }
+        };
+
+        pc.oniceconnectionstatechange = () =>
+          log("ICE状态: " + pc.iceConnectionState);
+        pc.onconnectionstatechange = () => {
+          log("连接状态: " + pc.connectionState);
+          if (pc.connectionState === "connected") {
+            log("🎉🎉🎉 连接成功！");
+          }
+        };
+
+        pc.ondatachannel = (e) => {
+          dc = e.channel;
+          dc.onopen = () => log("🎉 通道已打开！可以发消息了");
+          dc.onmessage = (e) => log("📩 收到: " + e.data);
+        };
+
+        await pc.setRemoteDescription(JSON.parse(offerStr));
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        log("正在收集ICE候选...");
+      }
+
+      // 第三步：Chrome 接受 Answer
+      async function acceptAnswer() {
+        const answerStr = document.getElementById("answer").value.trim();
+        if (!answerStr) {
+          alert("请先粘贴Answer");
+          return;
+        }
+        if (!pc) {
+          alert("请先创建连接");
+          return;
+        }
+
+        await pc.setRemoteDescription(JSON.parse(answerStr));
+        log("✅ 连接完成，等待通道打开...");
+      }
+
+      function send() {
+        const msg = document.getElementById("msg").value.trim();
+        if (!msg) return;
+        if (!dc || dc.readyState !== "open") {
+          alert("通道未打开");
+          return;
+        }
+        dc.send(msg);
+        log("📤 发送: " + msg);
+        document.getElementById("msg").value = "";
+      }
+
+      log("准备就绪");
+    </script>
+  </body>
+</html>
